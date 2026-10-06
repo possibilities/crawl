@@ -1,0 +1,18 @@
+# Copy to site.yml in an empty working directory, then set your own authorized URL.
+startUrl: https://example.com/
+# Empty include follows HTTP(S) links across domains by default. Deny rules win.
+include: []
+exclude:
+  - /logout
+  - /signout
+# Bare hostnames deny that hostname and all its subdomains, at every port.
+denyDomains: []
+maxConcurrency: 3
+maxRetries: 2
+maxPagesPerRun: 1000
+maxRequestsPerMinute: 120
+# Optional. Establish this state yourself using `crawl login` on your local machine.
+# Authenticated pages can only request their own exact origin (including resources).
+# auth:
+#   origins:
+#     - https://example.com
