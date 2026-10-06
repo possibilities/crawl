@@ -106,3 +106,51 @@ test('review: authenticated websocket never sends cookies to another port', brow
   await run(t, `${source.origin}/start`, { auth: { origins: [source.origin] } }, { authState: cookieState() });
   assert.ok(cookies.every(cookie => !cookie.includes('review-secret')), `cross-origin websocket sent cookie: ${JSON.stringify(cookies)}`);
 });
+
+test('review: a same-origin subresource redirect cannot leak auth to another origin', browserOptions, async t => {
+  const cookies = [];
+  const target = await server(t, (req, res) => { cookies.push(req.headers.cookie ?? ''); res.setHeader('content-type', 'text/javascript'); res.end('window.leaked = true'); });
+  let localAuthSeen = false;
+  const source = await server(t, (req, res) => {
+    localAuthSeen ||= (req.headers.cookie ?? '').includes('review-secret');
+    if (req.url === '/redirect.js') { res.writeHead(302, { Location: `${target.origin}/script.js` }); res.end(); return; }
+    res.setHeader('content-type', 'text/html');
+    res.end('<script src="/redirect.js"></script><title>source</title>');
+  });
+  await run(t, `${source.origin}/start`, { auth: { origins: [source.origin] } }, { authState: cookieState() });
+  assert.equal(localAuthSeen, true, 'the test must exercise an authenticated initial request');
+  assert.deepEqual(cookies, [], 'off-origin resource redirect must be blocked before its first request');
+});
+
+test('review: a post-commit metadata error never refetches the committed page', browserOptions, async t => {
+  let rootHits = 0;
+  const source = await server(t, (req, res) => {
+    if (req.url === '/start') rootHits++;
+    res.setHeader('content-type', 'text/html');
+    res.end(req.url === '/start' ? '<title>committed</title><a href="/child">child</a>' : '<title>child</title>');
+  });
+  const cwd = await directory(t);
+  const config = validateConfig({ startUrl: `${source.origin}/start`, maxConcurrency: 1, maxRetries: 2, maxRequestsPerMinute: 60000 });
+  let store = await Store.open(cwd, config.startUrl);
+  const writeRecord = store.writeRecord.bind(store);
+  let injected = false;
+  store.writeRecord = async row => {
+    if (!injected && row.url === config.startUrl && row.status === 'succeeded') {
+      injected = true;
+      throw new Error('simulated one-time derived metadata write failure');
+    }
+    return writeRecord(row);
+  };
+  try {
+    await crawl(config, store, { launchOptions: { executablePath }, logger() {} });
+    assert.equal(injected, true);
+    assert.equal(store.get(config.startUrl).status, 'succeeded');
+    assert.equal(rootHits, 1, 'Crawlee retries must not reload an already committed page');
+  } finally { store.close(); }
+  store = await Store.open(cwd, config.startUrl);
+  try {
+    await crawl(config, store, { launchOptions: { executablePath }, logger() {} });
+    assert.equal(rootHits, 1, 'resume must retain the original committed snapshot');
+    assert.equal(store.get(`${source.origin}/child`).status, 'succeeded', 'children committed with the page must still resume');
+  } finally { store.close(); }
+});

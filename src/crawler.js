@@ -51,21 +51,27 @@ export async function crawl(config, store, { authState = null, launchOptions = {
       await page.context().routeWebSocket('**/*', socket => {
         const url = new URL(socket.url());
         url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-        if ((authenticated && url.origin !== origin) || config.denyDomains.some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) socket.close();
+        const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+        if ((authenticated && url.origin !== origin) || config.denyDomains.some(domain => hostname === domain || hostname.endsWith(`.${domain}`))) socket.close();
         else socket.connectToServer();
       });
       await page.context().route('**/*', async route => {
         const outgoing = route.request();
         const url = canonicalUrl(outgoing.url());
-        const isDocument = outgoing.isNavigationRequest() && outgoing.frame() === page.mainFrame();
-        const isPopup = outgoing.isNavigationRequest() && outgoing.frame().page() !== page;
+        let frame;
+        try { frame = outgoing.frame(); } catch { await route.abort('blockedbyclient'); return; }
+        const isDocument = outgoing.isNavigationRequest() && frame === page.mainFrame();
+        const isPopup = outgoing.isNavigationRequest() && frame.page() !== page;
         if (isPopup) { await route.abort('blockedbyclient'); return; }
         let block = !url ? 'unsupported-url' : null;
         if (url && config.denyDomains.some(domain => {
           const host = new URL(url).hostname.replace(/\.$/, '').toLowerCase();
           return host === domain || host.endsWith(`.${domain}`);
         })) block = 'denied-domain';
-        if (url && isDocument) block ??= policy(url);
+        if (url && isDocument) {
+          const initialNetworkUrl = new URL(request.url); initialNetworkUrl.hash = '';
+          block ??= policy(url === initialNetworkUrl.href ? request.url : url);
+        }
         // Cookies cannot safely be stripped with route.continue. Keep saved-state contexts exact-origin.
         if (url && authenticated && new URL(url).origin !== origin) block ??= 'auth-cross-origin';
         if (block) {

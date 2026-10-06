@@ -94,3 +94,50 @@ test('real SIGKILL leaves a resumable queue without duplicate committed records'
   const rows=(await readFile(join(dir,'crawl-output/manifest.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(new Set(rows.map(row=>row.id)).size,2); store.close();
 });
+test('fragment-specific include policy preserves a hash-routed start URL', async t => {
+  const { origin, dir } = await fixture(t, (_req,res) => html(res, '<div id="route"></div><script>document.getElementById("route").textContent=location.hash</script>'));
+  const startUrl = origin + '/#/account';
+  const config = validateConfig({ startUrl, include: [origin + '/#/account'], maxRequestsPerMinute:60000 });
+  const store = await Store.open(dir,startUrl);
+  await run(config,store);
+  assert.equal(store.get(startUrl).status,'succeeded');
+  assert.match(await readFile(join(dir,'crawl-output',store.get(startUrl).htmlPath),'utf8'), /<div id="route">#\/account<\/div>/);
+  store.close();
+});
+test('graceful SIGINT finishes active work, releases the lock, and resumes pending pages', async t => {
+  let activeResponse, activeStarted;
+  const started = new Promise(resolve => activeStarted = resolve);
+  let rootHits = 0;
+  const { origin, dir } = await fixture(t, (req,res) => {
+    if (req.url === '/') { rootHits++; html(res, '<a href="/active">active</a><a href="/pending">pending</a>'); }
+    else if (req.url === '/active') { activeResponse=res; activeStarted(); }
+    else html(res, '<title>pending finished</title>');
+  });
+  await writeFile(join(dir,'site.yml'), `startUrl: ${origin}/\nmaxConcurrency: 1\nmaxRequestsPerMinute: 60000\n`);
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/crawl.js', import.meta.url))], { cwd:dir, env:process.env, stdio:['ignore','pipe','pipe'] });
+  let output='', sawStop;
+  const stopping = new Promise(resolve => sawStop=resolve);
+  child.stdout.on('data',x=>{ output+=x; if(output.includes('Stopping after')) sawStop(); });
+  child.stderr.on('data',x=>output+=x);
+  t.after(()=>child.kill('SIGKILL'));
+  await Promise.race([started, new Promise((_,reject)=>setTimeout(()=>reject(new Error(output || 'child did not start active page')),20000).unref())]);
+  child.kill('SIGINT');
+  await Promise.race([stopping, new Promise((_,reject)=>setTimeout(()=>reject(new Error(output || 'child did not handle SIGINT')),5000).unref())]);
+  const exited = once(child,'exit'); html(activeResponse,'<title>active finished</title>');
+  const [code] = await exited;
+  assert.equal(code,130,output);
+  const second=spawn(process.execPath,[fileURLToPath(new URL('../bin/crawl.js', import.meta.url))],{cwd:dir,env:process.env,stdio:['ignore','pipe','pipe']});
+  let secondOutput=''; second.stdout.on('data',x=>secondOutput+=x); second.stderr.on('data',x=>secondOutput+=x);
+  const [resumedCode]=await once(second,'exit'); assert.equal(resumedCode,0,secondOutput);
+  assert.equal(rootHits,1);
+  const rows=(await readFile(join(dir,'crawl-output/manifest.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(rows.filter(row=>row.status==='succeeded').length,3);
+});
+test('exhausted HTTP failures stay terminal on resume and respect retry bounds', async t => {
+  let failures = 0;
+  const {origin,dir}=await fixture(t,(_req,res)=>{ failures++; res.statusCode=503; html(res,'<h1>unavailable</h1>'); });
+  const config=validateConfig({startUrl:origin+'/',maxRetries:1,maxRequestsPerMinute:60000});
+  let store=await Store.open(dir,config.startUrl); await run(config,store);
+  assert.equal(store.get(config.startUrl).status,'failed'); assert.equal(failures,2); store.close();
+  store=await Store.open(dir,config.startUrl); await run(config,store); assert.equal(failures,2); store.close();
+});

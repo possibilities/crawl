@@ -25,6 +25,7 @@ test('schema rejects typos, unsafe values and multiple sites', () => {
 });
 test('logs redact likely secrets without changing stored identity', () => {
   assert.match(logUrl('https://example.com/?token=secret&x=1'), /redacted/);
+  assert.ok(!logUrl('https://example.com/#access_token=secret').includes('secret'));
   assert.ok(!logUrl('https://example.com/?token=secret&x=1').includes('secret'));
 });
 test('auth preserves cookie host semantics and narrows domain cookies', () => {

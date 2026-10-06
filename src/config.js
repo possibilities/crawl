@@ -83,6 +83,7 @@ export function createPolicy(config) {
 }
 export function logUrl(input) {
   const url = new URL(input);
+  if (url.hash) url.hash = '[redacted]';
   // Logging never changes request identity. Treat saved output as private regardless.
   for (const key of url.searchParams.keys()) if (/token|secret|password|auth|key|code|session/i.test(key)) url.searchParams.set(key, '[redacted]');
   return url.href;

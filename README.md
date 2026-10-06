@@ -6,7 +6,7 @@ No extraction schema, multi-site configuration, scheduler, refresh mode, screens
 
 ## Install
 
-Requires Node.js **24+** (built-in SQLite) and Chromium's system dependencies.
+Supports macOS/Linux with Node.js **24+** (built-in SQLite) and Chromium's system dependencies.
 
 ```sh
 git clone https://github.com/possibilities/crawl.git
@@ -110,7 +110,9 @@ crawl
 
 Each crawl page gets an isolated incognito context. Saved cookies are narrowed to the requested hostname, origin storage is exact-origin, and **authenticated contexts can request only their own exact origin, including scheme and port**. Cross-origin pages still enter the queue and receive their own context without another origin's credentials. Popups and off-origin WebSockets/resources are blocked. Sites requiring cross-origin authenticated APIs or CDN assets may render incompletely; this is a deliberate fail-closed boundary. Do not loosen it by exporting a general-purpose browser profile.
 
-Adding an `auth.origins` entry requires establishing login state again. Saved state is not expanded automatically. URL logs redact likely credential parameter names; arbitrary secrets can still appear in page URLs/content, so treat all outputs and logs as private.
+This is scoped browser-state reuse for trusted, authorized sites, not a malicious-page sandbox. Site code can place private values in HTML or links; review crawl boundaries and outputs.
+
+Adding an `auth.origins` entry requires establishing login state again. Saved state is not expanded automatically. URL logs redact fragments and likely credential parameter names; arbitrary secrets can still appear in page URLs/content, so treat all outputs and logs as private.
 
 ## Development
 

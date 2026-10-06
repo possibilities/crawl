@@ -1,9 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, rename, readdir, unlink, readFile, chmod, lstat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { createWriteStream } from 'node:fs';
-import { once } from 'node:events';
+import { join, dirname } from 'node:path';
 
 export const urlId = url => createHash('sha256').update(url).digest('hex');
 export async function atomicWrite(path, content) {
@@ -12,7 +10,7 @@ export async function atomicWrite(path, content) {
   try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
   await rename(temp, path);
   // Persist the rename, not just file contents, on local filesystems supporting fsync.
-  const directory = await open(join(path, '..'), 'r');
+  const directory = await open(dirname(path), 'r');
   try { await directory.sync(); } finally { await directory.close(); }
 }
 async function inspectDirectory(path) {
@@ -100,11 +98,11 @@ export class Store {
   }
   async exportManifest() {
     const target = join(this.output, 'manifest.jsonl'), temp = `${target}.${randomUUID()}.tmp`;
-    const stream = createWriteStream(temp, { flags: 'wx', mode: 0o600 });
-    const complete = once(stream, 'finish');
-    for (const row of this.rows()) if (!stream.write(`${JSON.stringify(this.metadata(row))}\n`)) await once(stream, 'drain');
-    stream.end(); await complete;
-    const file = await open(temp, 'r'); try { await file.sync(); } finally { await file.close(); }
+    const file = await open(temp, 'wx', 0o600);
+    try {
+      for (const row of this.rows()) await file.write(`${JSON.stringify(this.metadata(row))}\n`);
+      await file.sync();
+    } finally { await file.close(); }
     await rename(temp, target);
     const directory = await open(this.output, 'r'); try { await directory.sync(); } finally { await directory.close(); }
     await atomicWrite(join(this.output, 'manifest.json'), `${JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), index: 'manifest.jsonl', records: 'records/', pages: 'pages/', counts: this.counts(), note: 'JSONL is a startup/shutdown snapshot. Per-URL records are updated as work finishes; .crawl/crawl.sqlite is authoritative after a crash.' }, null, 2)}\n`);

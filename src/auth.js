@@ -22,7 +22,8 @@ export async function loadAuth(cwd, config) {
   try {
     const info = await stat(file);
     if (process.platform !== 'win32' && (info.mode & 0o077)) throw new Error('Authentication file must be private: chmod 600 .crawl/auth.json');
-    raw = JSON.parse(await readFile(file, 'utf8'));
+    const contents = await readFile(file, 'utf8');
+    try { raw = JSON.parse(contents); } catch { throw new Error('Invalid dedicated login state; run crawl login again'); }
   } catch (error) {
     if (error.code === 'ENOENT') throw new Error('No dedicated login state; run crawl login first');
     throw error;
