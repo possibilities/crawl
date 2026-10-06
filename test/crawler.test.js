@@ -135,7 +135,7 @@ test('graceful SIGINT finishes active work, releases the lock, and resumes pendi
 });
 test('exhausted HTTP failures stay terminal on resume and respect retry bounds', async t => {
   let failures = 0;
-  const {origin,dir}=await fixture(t,(_req,res)=>{ failures++; res.statusCode=503; html(res,'<h1>unavailable</h1>'); });
+  const {origin,dir}=await fixture(t,(req,res)=>{ if (req.url === '/') failures++; res.statusCode=503; html(res,'<h1>unavailable</h1>'); });
   const config=validateConfig({startUrl:origin+'/',maxRetries:1,maxRequestsPerMinute:60000});
   let store=await Store.open(dir,config.startUrl); await run(config,store);
   assert.equal(store.get(config.startUrl).status,'failed'); assert.equal(failures,2); store.close();

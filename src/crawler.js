@@ -24,6 +24,7 @@ export async function crawl(config, store, { authState = null, launchOptions = {
   store.discover(config.startUrl);
   await add(store.unfinished().map(row => row.url));
   const blocked = new Map();
+  const observed = new Map();
   const crawler = new PlaywrightCrawler({
     requestQueue: queue,
     maxConcurrency: config.maxConcurrency,
@@ -34,7 +35,7 @@ export async function crawl(config, store, { authState = null, launchOptions = {
     persistCookiesPerSession: false,
     retryOnBlocked: false,
     log: new Log({ level: LogLevel.OFF }),
-    launchContext: { launcher: chromium, useIncognitoPages: true, launchOptions: { headless: true, ...launchOptions } },
+    launchContext: { launcher: chromium, useIncognitoPages: true, launchOptions: { headless: true, handleSIGINT: false, handleSIGTERM: false, ...launchOptions } },
     browserPoolOptions: { useFingerprints: false, prePageCreateHooks: [(_id, _controller, options) => {
       options.serviceWorkers = 'block';
       options.acceptDownloads = false;
@@ -115,6 +116,11 @@ export async function crawl(config, store, { authState = null, launchOptions = {
       const reason = loadedUrl ? policy(loadedUrl) : 'unsupported-url';
       if (reason) { store.finish(request.url, 'skipped', reason, { loadedUrl }); await store.writeRecord(store.get(request.url)); return; }
       const httpStatus = response?.status() ?? null;
+      observed.set(request.url, { loadedUrl, httpStatus });
+      if (httpStatus >= 400) {
+        request.noRetry = httpStatus < 500 && httpStatus !== 429;
+        throw new Error(`HTTP ${httpStatus}`);
+      }
       const contentType = (await response?.headerValue('content-type')) ?? '';
       if (!/^(text\/html|application\/xhtml\+xml)(;|$)/i.test(contentType)) {
         store.finish(request.url, 'skipped', 'non-html', { loadedUrl, httpStatus });
@@ -129,9 +135,11 @@ export async function crawl(config, store, { authState = null, launchOptions = {
     async failedRequestHandler({ request }) {
       if (store.get(request.url)?.status === 'succeeded') { await store.writeRecord(store.get(request.url)); return; }
       const rejection = blocked.get(request.url);
-      store.finish(request.url, rejection?.status ?? (rejection ? 'skipped' : 'failed'), rejection?.reason ?? 'navigation-or-handler-failed', { loadedUrl: rejection?.loadedUrl, httpStatus: rejection?.httpStatus });
+      const last = observed.get(request.url);
+      const failureReason = last?.httpStatus >= 400 ? `http-${last.httpStatus}` : 'navigation-or-handler-failed';
+      store.finish(request.url, rejection?.status ?? (rejection ? 'skipped' : 'failed'), rejection?.reason ?? failureReason, { loadedUrl: rejection?.loadedUrl ?? last?.loadedUrl, httpStatus: rejection?.httpStatus ?? last?.httpStatus });
       await store.writeRecord(store.get(request.url));
-      logger({ event: rejection ? 'skipped' : 'failed', url: logUrl(request.url), reason: rejection?.reason ?? 'navigation-or-handler-failed' });
+      logger({ event: rejection ? 'skipped' : 'failed', url: logUrl(request.url), reason: rejection?.reason ?? failureReason });
     },
   }, runtime);
   onCrawler?.(crawler);

@@ -48,7 +48,7 @@ maxRequestsPerMinute: 120
 - For example, `include: ['https://example.com/**', 'https://docs.example.com/**']` limits the crawl to two origins; `exclude: ['/admin/**']` rejects those paths on every origin
 - `denyDomains` accepts bare hostnames. Each denies itself and all subdomains, regardless of scheme/port. Domain deny and exclude rules always beat include rules
 - Domain denies apply to browser resources as well as pages. Path/include rules select top-level pages, not their scripts or styles
-- `maxPagesPerRun` bounds requests handled in one invocation; concurrent work may slightly overshoot. Run `crawl` again to continue the queue. `maxRetries` is additional retries per request; exhausted failures remain recorded and are not silently retried on the next run
+- `maxPagesPerRun` bounds requests handled in one invocation; concurrent work may slightly overshoot. Run `crawl` again to continue the queue. `maxRetries` is additional retries per request; network errors, HTTP 429 and 5xx retry within that bound; other HTTP 4xx fail immediately. Exhausted failures remain recorded and are not silently retried on the next run
 - Unknown keys and duplicate YAML keys are errors. One working directory is permanently bound to its canonical start URL; use a fresh directory for another crawl
 
 ## Output and resume
