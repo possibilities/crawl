@@ -1,6 +1,8 @@
 # Copy to site.yml in an empty working directory, then set your own authorized URL.
 startUrl: https://example.com/
-# Empty include follows HTTP(S) links across domains by default. Deny rules win.
+# startUrl is always a literal URL-prefix include. Add globs to expand scope.
+# Empty include stays under that prefix. Deny rules win.
+# Use a trailing slash for a directory boundary (e.g. https://example.com/docs/).
 include: []
 exclude:
   - /logout

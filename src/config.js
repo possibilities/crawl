@@ -77,7 +77,8 @@ export function createPolicy(config) {
     if (config.denyDomains.some(domain => hostname === domain || hostname.endsWith(`.${domain}`))) return 'denied-domain';
     const matches = rules => rules.some(rule => rule.match(rule.path ? url.pathname : canonical));
     if (matches(exclude)) return 'excluded';
-    if (include.length && !matches(include)) return 'not-included';
+    // startUrl is an implicit literal prefix; explicit globs only expand it.
+    if (!canonical.startsWith(config.startUrl) && !matches(include)) return 'not-included';
     return null;
   };
 }

@@ -78,7 +78,8 @@ test('review: authenticated redirect never sends cookies to another port', brows
   const cookies = [];
   const target = await server(t, (req, res) => { cookies.push(req.headers.cookie ?? ''); res.setHeader('content-type', 'text/html'); res.end('<title>public target</title>'); });
   const source = await server(t, (req, res) => { res.writeHead(302, { Location: `${target.origin}/target` }); res.end(); });
-  await run(t, `${source.origin}/start`, { auth: { origins: [source.origin] } }, { authState: cookieState() });
+  await run(t, `${source.origin}/start`, { include: [target.origin + '/**'], auth: { origins: [source.origin] } }, { authState: cookieState() });
+  assert.equal(cookies.length, 1, 'explicitly included redirect target must actually be visited');
   assert.ok(cookies.every(cookie => !cookie.includes('review-secret')), `cross-origin redirect sent cookie: ${JSON.stringify(cookies)}`);
 });
 
@@ -90,7 +91,7 @@ test('review: authenticated popup never sends cookies to another port', browserO
     res.setHeader('content-type', 'text/html');
     res.end(`<script>window.open(${JSON.stringify(`${target.origin}/popup`)})</script><script src="/slow.js"></script><title>source</title>`);
   });
-  await run(t, `${source.origin}/start`, { auth: { origins: [source.origin] } }, { authState: cookieState() });
+  await run(t, `${source.origin}/start`, { include: [target.origin + '/**'], auth: { origins: [source.origin] } }, { authState: cookieState() });
   assert.ok(cookies.every(cookie => !cookie.includes('review-secret')), `cross-origin popup sent cookie: ${JSON.stringify(cookies)}`);
 });
 
@@ -103,7 +104,7 @@ test('review: authenticated websocket never sends cookies to another port', brow
     res.setHeader('content-type', 'text/html');
     res.end(`<script>new WebSocket(${JSON.stringify(`${target.origin.replace('http:', 'ws:')}/ws`)})</script><script src="/slow.js"></script><title>source</title>`);
   });
-  await run(t, `${source.origin}/start`, { auth: { origins: [source.origin] } }, { authState: cookieState() });
+  await run(t, `${source.origin}/start`, { include: [target.origin + '/**'], auth: { origins: [source.origin] } }, { authState: cookieState() });
   assert.ok(cookies.every(cookie => !cookie.includes('review-secret')), `cross-origin websocket sent cookie: ${JSON.stringify(cookies)}`);
 });
 
@@ -117,7 +118,7 @@ test('review: a same-origin subresource redirect cannot leak auth to another ori
     res.setHeader('content-type', 'text/html');
     res.end('<script src="/redirect.js"></script><title>source</title>');
   });
-  await run(t, `${source.origin}/start`, { auth: { origins: [source.origin] } }, { authState: cookieState() });
+  await run(t, `${source.origin}/start`, { include: [target.origin + '/**'], auth: { origins: [source.origin] } }, { authState: cookieState() });
   assert.equal(localAuthSeen, true, 'the test must exercise an authenticated initial request');
   assert.deepEqual(cookies, [], 'off-origin resource redirect must be blocked before its first request');
 });
@@ -130,7 +131,7 @@ test('review: a post-commit metadata error never refetches the committed page', 
     res.end(req.url === '/start' ? '<title>committed</title><a href="/child">child</a>' : '<title>child</title>');
   });
   const cwd = await directory(t);
-  const config = validateConfig({ startUrl: `${source.origin}/start`, maxConcurrency: 1, maxRetries: 2, maxRequestsPerMinute: 60000 });
+  const config = validateConfig({ startUrl: `${source.origin}/start`, include: [source.origin + '/child'], maxConcurrency: 1, maxRetries: 2, maxRequestsPerMinute: 60000 });
   let store = await Store.open(cwd, config.startUrl);
   const writeRecord = store.writeRecord.bind(store);
   let injected = false;

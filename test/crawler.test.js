@@ -20,7 +20,7 @@ async function fixture(t, handler) {
 }
 const html = (res, body) => { res.setHeader('Content-Type', 'text/html'); res.end(body); };
 const run = (config, store, extra = {}) => crawl(config, store, { launchOptions, logger() {}, ...extra });
-test('renders JS, follows external links, keeps identities, rejects assets and resumes without refetch', async t => {
+test('renders JS, follows explicitly included external links, keeps identities, rejects assets and resumes without refetch', async t => {
   const hits = [];
   const external = await fixture(t, (req,res) => { hits.push('external' + req.url); html(res, '<h1>external</h1>'); });
   const local = await fixture(t, (req,res) => {
@@ -29,7 +29,7 @@ test('renders JS, follows external links, keeps identities, rejects assets and r
     else if (req.url === '/asset.svg') { res.setHeader('Content-Type','image/svg+xml'); res.end('<svg/>'); }
     else html(res, '<h1>child</h1>');
   });
-  const config = validateConfig({ startUrl: local.origin + '/', exclude: ['/private/**'], maxRequestsPerMinute: 60000 });
+  const config = validateConfig({ startUrl: local.origin + '/', include: [external.origin + '/**'], exclude: ['/private/**'], maxRequestsPerMinute: 60000 });
   let store = await Store.open(local.dir, config.startUrl);
   const counts = await run(config, store);
   assert.equal(counts.succeeded, 4); assert.equal(counts.skipped, 2);
@@ -65,7 +65,7 @@ test('saved auth works only on an exact origin and cannot leak across ports or r
     if (req.url === '/') html(res, `<script src="${foreign.origin}/script.js"></script><a href="${foreign.origin}/page">cross</a><a href="/redirect">redirect</a>`);
     else { res.writeHead(302, { location: foreign.origin + '/redirect-target' }); res.end(); }
   });
-  const config = validateConfig({ startUrl: local.origin + '/', auth: { origins: [local.origin] }, maxRequestsPerMinute: 60000 });
+  const config = validateConfig({ startUrl: local.origin + '/', include: [foreign.origin + '/**'], auth: { origins: [local.origin] }, maxRequestsPerMinute: 60000 });
   const store = await Store.open(local.dir, config.startUrl);
   await run(config, store, { authState: { cookies: [{ name:'session', value:'private', domain:'127.0.0.1', path:'/', expires:-1, httpOnly:true, secure:false, sameSite:'Lax' }], origins:[] } });
   assert.equal(authSeen, true); assert.equal(foreignCookie, ''); assert.equal(crossRequests, 2);
@@ -140,4 +140,64 @@ test('exhausted HTTP failures stay terminal on resume and respect retry bounds',
   let store=await Store.open(dir,config.startUrl); await run(config,store);
   assert.equal(store.get(config.startUrl).status,'failed'); assert.equal(failures,2); store.close();
   store=await Store.open(dir,config.startUrl); await run(config,store); assert.equal(failures,2); store.close();
+});
+test('default prefix skips outside links and legacy pending URLs; explicit expansion resumes them without recrawl', async t => {
+  const localHits = [], externalHits = [];
+  const external = await fixture(t, (req,res) => { externalHits.push(req.url); html(res, '<title>external</title>'); });
+  const local = await fixture(t, (req,res) => {
+    localHits.push(req.url);
+    html(res, req.url === '/docs/'
+      ? `<a href="/docs/child">child</a><a href="/docs-other">sibling prefix</a><a href="/outside">outside</a><a href="${external.origin}/other">external</a>`
+      : '<title>page</title>');
+  });
+  const config = validateConfig({ startUrl: local.origin + '/docs/', maxRequestsPerMinute: 60000 });
+  let store = await Store.open(local.dir, config.startUrl);
+  // Simulate a durable queue left by the previous, broader default.
+  store.discover(local.origin + '/outside');
+  store.discover(external.origin + '/queued');
+  await run(config, store);
+  assert.deepEqual(localHits.sort(), ['/docs/', '/docs/child']);
+  assert.deepEqual(externalHits, []);
+  for (const url of [local.origin + '/outside', local.origin + '/docs-other', external.origin + '/other', external.origin + '/queued']) assert.equal(store.get(url).reason, 'not-included');
+  const root = store.get(config.startUrl);
+  store.close();
+  store = await Store.open(local.dir, config.startUrl);
+  const expanded = validateConfig({ startUrl: config.startUrl, include: [local.origin + '/outside', external.origin + '/**'], exclude: ['/queued'], maxRequestsPerMinute: 60000 });
+  await run(expanded, store);
+  assert.equal(store.get(config.startUrl).finishedAt, root.finishedAt);
+  assert.equal(localHits.filter(url => url === '/docs/').length, 1);
+  assert.equal(store.get(local.origin + '/outside').status, 'succeeded');
+  assert.equal(store.get(local.origin + '/docs-other').reason, 'not-included');
+  assert.deepEqual(externalHits, ['/other']);
+  assert.equal(store.get(external.origin + '/queued').reason, 'excluded');
+  store.close();
+});
+test('prefix scope rejects HTTP and JavaScript redirect destinations before network access', async t => {
+  const hits = [], externalHits = [];
+  const external = await fixture(t, (req,res) => { externalHits.push(req.url); html(res, '<title>external</title>'); });
+  const { origin, dir } = await fixture(t, (req,res) => {
+    hits.push(req.url);
+    if (req.url === '/docs/to-outside') { res.writeHead(302, { location: '/outside' }); res.end(); }
+    else if (req.url === '/docs/to-external') { res.writeHead(302, { location: external.origin + '/target' }); res.end(); }
+    else if (req.url === '/docs/to-child') { res.writeHead(302, { location: '/docs/child' }); res.end(); }
+    else if (req.url === '/docs/js-redirect') html(res, '<script>location.replace("/outside-js")</script>');
+    else html(res, '<title>page</title>');
+  });
+  const config = validateConfig({ startUrl: origin + '/docs/', maxRequestsPerMinute: 60000 });
+  let store = await Store.open(dir, config.startUrl);
+  for (const path of ['to-outside', 'to-external', 'to-child', 'js-redirect']) store.discover(origin + '/docs/' + path);
+  await run(config, store);
+  assert.equal(hits.includes('/outside'), false);
+  assert.equal(hits.includes('/outside-js'), false);
+  assert.deepEqual(externalHits, []);
+  assert.equal(store.get(origin + '/docs/to-outside').reason, 'not-included');
+  assert.equal(store.get(origin + '/docs/to-external').reason, 'not-included');
+  assert.equal(store.get(origin + '/docs/child').status, 'succeeded');
+  store.close();
+  store = await Store.open(dir, config.startUrl);
+  await run(validateConfig({ startUrl: config.startUrl, include: [external.origin + '/**'], maxRequestsPerMinute: 60000 }), store);
+  assert.equal(store.get(external.origin + '/target').status, 'succeeded');
+  assert.deepEqual(externalHits, ['/target']);
+  assert.equal(hits.includes('/outside'), false);
+  store.close();
 });

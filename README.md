@@ -2,7 +2,7 @@
 
 A small, resumable CLI that saves rendered HTML for a content-rewrite project. It uses [Crawlee's PlaywrightCrawler](https://crawlee.dev/js/docs/examples/playwright-crawler) and Playwright Chromium. Run it from any working directory containing **one `site.yml` and one start URL**.
 
-No extraction schema, multi-site configuration, scheduler, refresh mode, screenshots, or asset archive. Crawl only content you are authorized to access. Links cross domains by default, so set boundaries before starting a large run.
+No extraction schema, multi-site configuration, scheduler, refresh mode, screenshots, or asset archive. Crawl only content you are authorized to access. By default, only URLs starting with your `startUrl` are crawled. Add explicit include rules to expand that scope.
 
 ## Install
 
@@ -43,9 +43,12 @@ maxPagesPerRun: 1000
 maxRequestsPerMinute: 120
 ```
 
-- Empty `include` follows every discovered HTTP(S) anchor/area link, across domains
+- `startUrl` is always an implicit **literal URL-prefix include**. Omitted or empty `include` stays within that prefix; explicit `include` globs add allowed URLs, paths or domains without removing the implicit prefix
+- Prefix matching uses the canonical full URL and JavaScript `startsWith`, not path-segment matching. `https://example.com/docs/` includes `/docs/` and its descendants, but excludes `/docs` and `/docs-other`. Without the trailing slash, `https://example.com/docs` also includes `/docs-other`. A bare origin normalizes to `/`. Query strings and fragments in `startUrl` are part of the literal prefix, in their original order/encoding
+- Include rules do not seed additional URLs. Crawling begins at `startUrl` and follows discovered HTTP(S) anchor/area links or permitted redirects
 - Globs beginning with `/` match the case-sensitive pathname only. Other globs match the entire URL, including query and fragment. [Picomatch](https://github.com/micromatch/picomatch) syntax applies; quote patterns in YAML
-- For example, `include: ['https://example.com/**', 'https://docs.example.com/**']` limits the crawl to two origins; `exclude: ['/admin/**']` rejects those paths on every origin
+- For example, with `startUrl: https://example.com/docs/`, `include: ['https://example.com/guides/**', 'https://docs.example.com/**']` additionally permits the guides subtree and a second origin. `exclude: ['/admin/**']` rejects those paths on every origin. Path-only include globs can expand scope on any origin; use full-URL globs to name a particular origin
+- To explicitly opt into the former all-URL behavior, set `include: ['**']`. Deny rules still apply
 - `denyDomains` accepts bare hostnames. Each denies itself and all subdomains, regardless of scheme/port. Domain deny and exclude rules always beat include rules
 - Domain denies apply to browser resources as well as pages. Path/include rules select top-level pages, not their scripts or styles
 - `maxPagesPerRun` bounds requests handled in one invocation; concurrent work may slightly overshoot. Run `crawl` again to continue the queue. `maxRetries` is additional retries per request; network errors, HTTP 429 and 5xx retry within that bound; other HTTP 4xx fail immediately. Exhausted failures remain recorded and are not silently retried on the next run
@@ -69,7 +72,7 @@ Each record includes original URL, final/redirect URL, status, discovery/start/f
 
 `manifest.jsonl` is an atomic startup/shutdown snapshot. Individual records update during a run, so agents can inspect finished pages without waiting for the run to end. The SQLite database is the source of truth; an abrupt crash can leave derived JSON temporarily stale until the next startup repairs it. A manifest snapshot never pretends to be a complete live index.
 
-`Ctrl-C` or `SIGTERM` stops after active pages finish and exports the manifest. Restart with the same command. A hard crash may require 10 seconds for the stale directory lock to expire. Interrupted requests return to the durable queue; committed pages are never fetched again. Every pending/excluded URL is checked against the new configuration on resume. A previously excluded URL can become eligible after widening your rules; saved successes, non-HTML skips, and exhausted failures are terminal. There is deliberately no refresh/recrawl command.
+`Ctrl-C` or `SIGTERM` stops after active pages finish and exports the manifest. Restart with the same command. A hard crash may require 10 seconds for the stale directory lock to expire. Interrupted requests return to the durable queue; committed pages are never fetched again. Every pending/excluded URL is checked against the new configuration on resume, including URLs queued by an older broad-scope version. Out-of-scope pending URLs are marked `skipped` / `not-included` before any page request. Already saved records and HTML are retained without fetching them again. A previously excluded URL can become eligible after widening your rules; saved successes, non-HTML skips, and exhausted failures are terminal. There is deliberately no refresh/recrawl command.
 
 HTML is written and fsynced via atomic rename **before** the SQLite transaction commits its page metadata and discovered children. SQLite uses WAL + `synchronous=FULL`; retries are guarded against already committed pages. Restart repairs JSON records and removes uncommitted HTML/temp files. Missing/corrupt committed HTML fails closed and requires restoring a backup, rather than fetching silently. These guarantees assume a reliable local filesystem; do not place the working directory on a shared/network filesystem or run multiple machines against it. Back up `.crawl` and `crawl-output` together while stopped.
 
@@ -108,7 +111,7 @@ crawl
 
 `crawl login` uses a fresh browser context. It saves cookies and origin storage (including IndexedDB where supported) only for your explicitly listed origins in `.crawl/auth.json`, with private file permissions. No password prompt exists in the CLI. Browser state stays local and is never printed or uploaded. Session storage is not persisted; some sites may require a new login. Rerun `crawl login` to replace expired state.
 
-Each crawl page gets an isolated incognito context. Saved cookies are narrowed to the requested hostname, origin storage is exact-origin, and **authenticated contexts can request only their own exact origin, including scheme and port**. Cross-origin pages still enter the queue and receive their own context without another origin's credentials. Popups and off-origin WebSockets/resources are blocked. Sites requiring cross-origin authenticated APIs or CDN assets may render incompletely; this is a deliberate fail-closed boundary. Do not loosen it by exporting a general-purpose browser profile.
+Each crawl page gets an isolated incognito context. Saved cookies are narrowed to the requested hostname, origin storage is exact-origin, and **authenticated contexts can request only their own exact origin, including scheme and port**. Explicitly included cross-origin pages still enter the queue and receive their own context without another origin's credentials. Popups and off-origin WebSockets/resources are blocked. Sites requiring cross-origin authenticated APIs or CDN assets may render incompletely; this is a deliberate fail-closed boundary. Do not loosen it by exporting a general-purpose browser profile.
 
 This is scoped browser-state reuse for trusted, authorized sites, not a malicious-page sandbox. Site code can place private values in HTML or links; review crawl boundaries and outputs.
 
